@@ -171,3 +171,36 @@ plotting script also stores the binned and aggregated metrics of multiple runs
 into a single JSON file for easy manual plotting.
 
 [mixed]: https://www.tensorflow.org/guide/mixed_precision
+
+## Implementation for Google Colaboratory
+For dependencies:
+
+'''sh
+!pip install tensorflow==2.8.0
+!pip install tensorflow_probability==0.16.0
+!pip install ruamel.yaml
+!pip install 'gym[atari]'
+!pip install dm_control
+'''
+
+Training on DM control:
+
+```sh
+!python3 dreamerv2/dreamerv2/train.py --logdir ~/logdir/dmc_walker_walk/dreamerv2/1 \
+--configs dmc_vision --task dmc_walker_walk
+```
+
+Visualization:
+
+'''sh
+!pip install tensorboardcolab
+
+from tensorboardcolab import TensorBoardColab
+
+# Create an instance of TensorBoardColab
+tbc = TensorBoardColab()
+
+# Point TensorBoard to the logs directory
+logdir = '~/logdir'  # Replace this with your log directory
+tbc.configure(log_dir=logdir)
+'''
