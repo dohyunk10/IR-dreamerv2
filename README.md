@@ -194,13 +194,12 @@ Visualization:
 
 '''sh
 !pip install tensorboardcolab
-
 from tensorboardcolab import TensorBoardColab
 
-# Create an instance of TensorBoardColab
-tbc = TensorBoardColab()
 
-# Point TensorBoard to the logs directory
+tbc = TensorBoardColab() # Create an instance of TensorBoardColab
+
+
 logdir = '~/logdir'  # Replace this with your log directory
-tbc.configure(log_dir=logdir)
+tbc.configure(log_dir=logdir) # Point TensorBoard to the logs directory
 '''
