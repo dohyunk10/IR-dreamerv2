@@ -21,15 +21,15 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
 import numpy as np
-import ruamel.yaml as yaml
+from ruamel.yaml import YAML
 
 import agent
 import common
 
 
 def main():
-
-  configs = yaml.safe_load((
+  yaml = YAML(typ='safe', pure=True)
+  configs = yaml.load((
       pathlib.Path(sys.argv[0]).parent / 'configs.yaml').read_text())
   parsed, remaining = common.Flags(configs=['defaults']).parse(known_only=True)
   config = common.Config(configs['defaults'])
