@@ -172,6 +172,13 @@ into a single JSON file for easy manual plotting.
 
 [mixed]: https://www.tensorflow.org/guide/mixed_precision
 
+## IR-Dreamer: Isometricallly Regularizatized-Dreamer Algorithm
+IR-Dreamer algorithm is implemented. The concept is modifying the autoencoder used
+in making the latent vector for Dreamer algorithm to make it nearlly isometric. By 
+doing so, we expect the latent vector that represent the world will be more 
+representative and preserves the key informations without distortion, which will 
+probably lead to faster learning time and better performance.
+
 ## Implementation for Google Colaboratory
 For dependencies:
 
