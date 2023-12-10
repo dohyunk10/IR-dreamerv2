@@ -175,13 +175,13 @@ into a single JSON file for easy manual plotting.
 ## Implementation for Google Colaboratory
 For dependencies:
 
-'''sh
+```sh
 !pip install tensorflow==2.8.0
 !pip install tensorflow_probability==0.16.0
 !pip install ruamel.yaml
 !pip install 'gym[atari]'
 !pip install dm_control
-'''
+```
 
 Training on DM control:
 
@@ -192,7 +192,7 @@ Training on DM control:
 
 Visualization:
 
-'''sh
+```sh
 !pip install tensorboardcolab
 from tensorboardcolab import TensorBoardColab
 
@@ -202,4 +202,4 @@ tbc = TensorBoardColab() # Create an instance of TensorBoardColab
 
 logdir = '~/logdir'  # Replace this with your log directory
 tbc.configure(log_dir=logdir) # Point TensorBoard to the logs directory
-'''
+```
