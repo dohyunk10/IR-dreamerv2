@@ -80,10 +80,16 @@ class Agent(common.Module):
 
 class WorldModel(common.Module):
 
-  def __init__(self, config, obs_space, tfstep):
+  def __init__(self, config, obs_space, tfstep, iso_reg=1.0, metric='identity'):
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
     self.config = config
     self.tfstep = tfstep
+    ############################################################################################################
+    ###################################### HyperParam for IR ###################################################
+    self.iso_reg = iso_reg
+    self.metric = metric
+    ############################################################################################################
+    ############################################################################################################
     self.rssm = common.EnsembleRSSM(**config.rssm)
     self.encoder = common.Encoder(shapes, **config.encoder)
     self.heads = {}
@@ -123,6 +129,14 @@ class WorldModel(common.Module):
         losses[key] = -like.mean()
     model_loss = sum(
         self.config.loss_scales.get(k, 1.0) * v for k, v in losses.items())
+    ############################################################################################################
+    ############################## Isometric Regularization ####################################################
+    #z_sample = self.sample_latent(embed)
+    z_sample = embed
+    iso_loss = self.relaxed_distortion_measure(self.heads['decoder'], z_sample, eta=0.2, metric=self.metric)
+    model_loss = model_loss + self.iso_reg * iso_loss
+    ############################################################################################################
+    ############################################################################################################
     outs = dict(
         embed=embed, feat=feat, post=post,
         prior=prior, likes=likes, kl=kl_value)
@@ -132,6 +146,36 @@ class WorldModel(common.Module):
     metrics['post_ent'] = self.rssm.get_dist(post).entropy().mean()
     last_state = {k: v[:, -1] for k, v in post.items()}
     return model_loss, last_state, outs, metrics
+    
+  ############################################################################################################
+  ########################## Function for IR #################################################################
+  def relaxed_distortion_measure(func, z, eta=0.2, create_graph=True):
+    '''
+    func: decoder that maps "latent value z" to "data", where z.size() == (batch_size, latent_dim)
+    '''
+    bs = len(z)
+    z_perm = z[torch.randperm(bs)]
+    alpha = (torch.rand(bs) * (1 + 2*eta) - eta).unsqueeze(1).to(z)
+    z_augmented = alpha*z + (1-alpha)*z_perm
+    v = torch.randn(z.size()).to(z)
+    Jv = torch.autograd.functional.jvp(
+        func, z_augmented, v=v, create_graph=create_graph)[1]
+    TrG = torch.sum(Jv.view(bs, -1)**2, dim=1).mean()
+    JTJv = (torch.autograd.functional.vjp(
+        func, z_augmented, v=Jv, create_graph=create_graph)[1]).view(bs, -1)
+    TrG2 = torch.sum(JTJv**2, dim=1).mean()
+    return TrG2/TrG**2
+
+  '''
+  def sample_latent(self, z):
+    half_chan = int(z.shape[1] / 2)
+    mu, log_sig = z[:, :half_chan], z[:, half_chan:]
+    eps = torch.randn(*mu.shape, dtype=torch.float32)
+    eps = eps.to(z.device)
+    return mu + torch.exp(log_sig) * eps
+  '''
+  ############################################################################################################
+  ############################################################################################################
 
   def imagine(self, policy, start, is_terminal, horizon):
     flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
