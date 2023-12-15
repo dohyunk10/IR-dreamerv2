@@ -211,7 +211,7 @@ class Encoder(common.Module):
     if self.mlp_keys:
       outputs.append(self._mlp({k: data[k] for k in self.mlp_keys}))
     output = tf.concat(outputs, -1)
-    return output.reshape(batch_dims + output.shape[1:])
+    return output.reshape(batch_dims + output.shape[1:])                        # x: (16, 50, 1536)
 
   def _cnn(self, data):
     x = tf.concat(list(data.values()), -1)
@@ -220,8 +220,8 @@ class Encoder(common.Module):
       depth = 2 ** i * self._cnn_depth
       x = self.get(f'conv{i}', tfkl.Conv2D, depth, kernel, 2)(x)
       x = self.get(f'convnorm{i}', NormLayer, self._norm)(x)
-      x = self._act(x)
-    return x.reshape(tuple(x.shape[:-3]) + (-1,))
+      x = self._act(x)                                                          
+    return x.reshape(tuple(x.shape[:-3]) + (-1,))                               # x: (800, 2, 2, 384)
 
   def _mlp(self, data):
     x = tf.concat(list(data.values()), -1)
@@ -279,6 +279,29 @@ class Decoder(common.Module):
         key: tfd.Independent(tfd.Normal(mean, 1), 3)
         for (key, shape), mean in zip(channels.items(), means)}
     return dists
+
+  ############################################################################################################
+  ######################### Differentiable decoder forward function ##########################################
+  def transform_state(self, features):
+    x = self.get('convin', tfkl.Dense, 32 * self._cnn_depth)(features)          # features: (16, 50, 1224) -> x: (16, 50, 1536)
+    x = tf.reshape(x, [-1, 32 * self._cnn_depth])                                # x: (800, 1536)
+    return x
+
+  def estim_obs(self, x): 
+    x = tf.reshape(x, [-1, 1, 1, 32 * self._cnn_depth])                                                        # x: (800, 1536)
+    channels = {k: self._shapes[k][-1] for k in self.cnn_keys}
+    ConvT = tfkl.Conv2DTranspose
+    for i, kernel in enumerate(self._cnn_kernels):
+      depth = 2 ** (len(self._cnn_kernels) - i - 2) * self._cnn_depth
+      act, norm = self._act, self._norm
+      if i == len(self._cnn_kernels) - 1:
+        depth, act, norm = sum(channels.values()), tf.identity, 'none'
+      x = self.get(f'conv{i}', ConvT, depth, kernel, 2)(x)
+      x = self.get(f'convnorm{i}', NormLayer, norm)(x)
+      x = act(x)                                                                
+    return x                                                                    # x: (800, 64, 64, 3)
+  ############################################################################################################
+  ############################################################################################################
 
   def _mlp(self, features):
     shapes = {k: self._shapes[k] for k in self.mlp_keys}
