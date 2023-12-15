@@ -80,14 +80,13 @@ class Agent(common.Module):
 
 class WorldModel(common.Module):
 
-  def __init__(self, config, obs_space, tfstep, iso_reg=1.0, metric='identity'):
+  def __init__(self, config, obs_space, tfstep, iso_reg=1.0):
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
     self.config = config
     self.tfstep = tfstep
     ############################################################################################################
     ###################################### HyperParam for IR ###################################################
     self.iso_reg = iso_reg
-    self.metric = metric
     ############################################################################################################
     ############################################################################################################
     self.rssm = common.EnsembleRSSM(**config.rssm)
@@ -110,18 +109,18 @@ class WorldModel(common.Module):
 
   def loss(self, data, state=None):
     data = self.preprocess(data)
-    embed = self.encoder(data)
+    embed = self.encoder(data)                                                  # data: (16x50, 64, 64, 3) -> embed: (16, 50, 1536) 
     post, prior = self.rssm.observe(
-        embed, data['action'], data['is_first'], state)
-    kl_loss, kl_value = self.rssm.kl_loss(post, prior, **self.config.kl)
-    assert len(kl_loss.shape) == 0
+        embed, data['action'], data['is_first'], state)                         # state: (16, 50, 1224), data['action']: (16, 50, 6)
+    kl_loss, kl_value = self.rssm.kl_loss(post, prior, **self.config.kl)        # post, prior: (16, 50, 1224) but in split form as,
+    assert len(kl_loss.shape) == 0                                              # stochastic and deterministic hidden variables
     likes = {}
     losses = {'kl': kl_loss}
-    feat = self.rssm.get_feat(post)
+    feat = self.rssm.get_feat(post)                                             # feat: (16, 50, 1224)
     for name, head in self.heads.items():
       grad_head = (name in self.config.grad_heads)
       inp = feat if grad_head else tf.stop_gradient(feat)
-      out = head(inp)
+      out = head(inp)                                                           # out: probability distributions for obs, reward
       dists = out if isinstance(out, dict) else {name: out}
       for key, dist in dists.items():
         like = tf.cast(dist.log_prob(data[key]), tf.float32)
@@ -130,11 +129,10 @@ class WorldModel(common.Module):
     model_loss = sum(
         self.config.loss_scales.get(k, 1.0) * v for k, v in losses.items())
     ############################################################################################################
-    ############################## Isometric Regularization ####################################################
-    #z_sample = self.sample_latent(embed)
-    z_sample = embed
-    iso_loss = self.relaxed_distortion_measure(self.heads['decoder'], z_sample, eta=0.2, metric=self.metric)
-    model_loss = model_loss + self.iso_reg * iso_loss
+    ############################## Isometric Regularization on Decoder #########################################
+    z = self.heads['decoder'].transform_state(feat)
+    iso_loss = self.relaxed_distortion_measure(self.heads['decoder'].estim_obs, z)
+    model_loss = model_loss + tf.cast(self.iso_reg * iso_loss, tf.float32)
     ############################################################################################################
     ############################################################################################################
     outs = dict(
@@ -149,10 +147,10 @@ class WorldModel(common.Module):
     
   ############################################################################################################
   ########################## Function for IR #################################################################
-  def relaxed_distortion_measure(func, z, eta=0.2, create_graph=True):
+  def relaxed_distortion_measure(self, func, z, eta=0.2, create_graph=True):
     '''
     func: decoder that maps "latent value z" to "data", where z.size() == (batch_size, latent_dim)
-    '''
+    
     bs = len(z)
     z_perm = z[torch.randperm(bs)]
     alpha = (torch.rand(bs) * (1 + 2*eta) - eta).unsqueeze(1).to(z)
@@ -165,6 +163,40 @@ class WorldModel(common.Module):
         func, z_augmented, v=Jv, create_graph=create_graph)[1]).view(bs, -1)
     TrG2 = torch.sum(JTJv**2, dim=1).mean()
     return TrG2/TrG**2
+    '''
+    bs = z.shape[0]
+    indices = tf.random.shuffle(tf.range(bs))
+    z_perm = tf.gather(z, indices)
+
+    alpha = tf.random.uniform([bs], minval=1 - eta, maxval=1 + eta)[:, tf.newaxis]
+    alpha = tf.cast(alpha, dtype=z.dtype)
+
+    z_augmented = tf.multiply(alpha, z) + tf.multiply((1 - alpha), z_perm)
+    v = tf.random.normal(z.shape, dtype=z.dtype) 
+    #print(z_augmented.shape)
+    #print(v.shape)
+    #print(f"decoder_output: {func(z_augmented).shape}")
+
+    with tf.GradientTape(persistent=True) as tape:
+      tape.watch(z_augmented)
+      y = func(z_augmented)
+      J = tape.batch_jacobian(y, z_augmented)
+    Jv = tf.multiply(J, tf.expand_dims(tf.expand_dims(tf.expand_dims(v, axis=1), axis=2), axis=3))
+    Jv = tf.reduce_sum(Jv, axis=-1)
+    TrG = tf.reduce_mean(tf.reduce_sum(Jv**2, axis=[1, 2, 3]))  # Assuming z has shape [batch_size, height, width, channels]
+    #print(TrG)
+    
+    JvT = tf.transpose(Jv, perm=[0, 2, 1, 3])
+    JTJv = tf.einsum('bijc,bjkc->bikc', JvT, Jv)
+    '''
+    with tf.GradientTape(persistent=True) as tape:
+        tape.watch(z_augmented)
+        JTJv = tape.batch_jacobian(y, z_augmented, output_gradients = Jv)
+        print(JTJv)
+    '''
+    TrG2 = tf.reduce_mean(tf.reduce_sum(JTJv**2, axis=[1, 2, 3]))  # Assuming z has shape [batch_size, height, width, channels]
+    
+    return TrG2 / (TrG**2)
 
   '''
   def sample_latent(self, z):
