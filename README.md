@@ -183,8 +183,8 @@ probably lead to faster learning time and better performance.
 For dependencies:
 
 ```sh
-!pip install tensorflow==2.8.0
-!pip install tensorflow_probability==0.16.0
+!pip install tensorflow==2.15.0
+!pip install tensorflow_probability
 !pip install ruamel.yaml
 !pip install 'gym[atari]'
 !pip install dm_control
