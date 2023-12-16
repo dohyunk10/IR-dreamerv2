@@ -51,8 +51,8 @@ def main():
     tf.config.experimental.set_memory_growth(gpu, True)
   assert config.precision in (16, 32), config.precision
   if config.precision == 16:
-    from tensorflow.keras.mixed_precision import experimental as prec
-    prec.set_policy(prec.Policy('mixed_float16'))
+    from tensorflow.keras import mixed_precision as prec
+    prec.set_global_policy(prec.Policy('mixed_float16'))
 
   train_replay = common.Replay(logdir / 'train_episodes', **config.replay)
   eval_replay = common.Replay(logdir / 'eval_episodes', **dict(
@@ -139,6 +139,9 @@ def main():
   eval_driver.on_episode(eval_replay.add_episode)
 
   prefill = max(0, config.prefill - train_replay.stats['total_steps'])
+  print(f"config prefill: {config.prefill}")
+  print(f"total step: {train_replay.stats['total_steps']}")
+  print(f"prefill: {prefill}")
   if prefill:
     print(f'Prefill dataset ({prefill} steps).')
     random_agent = common.RandomAgent(act_space)
@@ -158,7 +161,8 @@ def main():
     agnt.load(logdir / 'variables.pkl')
   else:
     print('Pretrain agent.')
-    for _ in range(config.pretrain):
+    for i in range(config.pretrain):
+      print(f"pretraining {i} step")
       train_agent(next(train_dataset))
   train_policy = lambda *args: agnt.policy(
       *args, mode='explore' if should_expl(step) else 'train')
