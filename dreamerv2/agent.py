@@ -4,6 +4,7 @@ from tensorflow.keras import mixed_precision as prec
 import common
 import expl
 
+import numpy
 
 class Agent(common.Module):
 
@@ -66,6 +67,9 @@ class Agent(common.Module):
     if self.config.expl_behavior != 'greedy':
       mets = self._expl_behavior.train(start, outputs, data)[-1]
       metrics.update({'expl_' + key: value for key, value in mets.items()})
+    print("agent train finish") ##############################
+    #print(state)
+    #print(metrics)
     return state, metrics
 
   @tf.function
@@ -80,13 +84,13 @@ class Agent(common.Module):
 
 class WorldModel(common.Module):
 
-  def __init__(self, config, obs_space, tfstep, iso_reg=1.0):
+  def __init__(self, config, obs_space, tfstep, iso_reg=0.1):
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
     self.config = config
     self.tfstep = tfstep
     ############################################################################################################
     ###################################### HyperParam for IR ###################################################
-    self.iso_reg = iso_reg
+    self.iso_reg = tf.cast(iso_reg, tf.float32)
     ############################################################################################################
     ############################################################################################################
     self.rssm = common.EnsembleRSSM(**config.rssm)
@@ -105,6 +109,7 @@ class WorldModel(common.Module):
       model_loss, state, outputs, metrics = self.loss(data, state)
     modules = [self.encoder, self.rssm, *self.heads.values()]
     metrics.update(self.model_opt(model_tape, model_loss, modules))
+    print("world model train finish") #############################
     return state, outputs, metrics
 
   def loss(self, data, state=None):
@@ -126,86 +131,69 @@ class WorldModel(common.Module):
         like = tf.cast(dist.log_prob(data[key]), tf.float32)
         likes[key] = like
         losses[key] = -like.mean()
-    model_loss = sum(
-        self.config.loss_scales.get(k, 1.0) * v for k, v in losses.items())
     ############################################################################################################
     ############################## Isometric Regularization on Decoder #########################################
-    z = self.heads['decoder'].transform_state(feat)
-    iso_loss = self.relaxed_distortion_measure(self.heads['decoder'].estim_obs, z)
-    model_loss = model_loss + tf.cast(self.iso_reg * iso_loss, tf.float32)
+    iso_loss = self.relaxed_distortion_measure(self.heads['decoder'].estim_obs, feat)
+    iso_loss = self.iso_reg * tf.cast(iso_loss, tf.float32)
+    losses['iso'] = iso_loss
     ############################################################################################################
     ############################################################################################################
+    model_loss = sum(
+        self.config.loss_scales.get(k, 1.0) * v for k, v in losses.items())
+
     outs = dict(
         embed=embed, feat=feat, post=post,
-        prior=prior, likes=likes, kl=kl_value)
+        prior=prior, likes=likes, kl=kl_value, iso=iso_loss)
     metrics = {f'{name}_loss': value for name, value in losses.items()}
     metrics['model_kl'] = kl_value.mean()
     metrics['prior_ent'] = self.rssm.get_dist(prior).entropy().mean()
     metrics['post_ent'] = self.rssm.get_dist(post).entropy().mean()
     last_state = {k: v[:, -1] for k, v in post.items()}
+    print("world model loss finish") #################################
     return model_loss, last_state, outs, metrics
     
   ############################################################################################################
   ########################## Function for IR #################################################################
-  def relaxed_distortion_measure(self, func, z, eta=0.2, create_graph=True):
+  def relaxed_distortion_measure(self, func, feat, eta=0.2, create_graph=True):
     '''
-    func: decoder that maps "latent value z" to "data", where z.size() == (batch_size, latent_dim)
+    func: decoder that maps "latent value z" to "observation"
+        where input z.size() == (Batch_Size, latent_dim) # (800, 1224)
+        and output func(z).size() == (Batch_Size, obs_dim) # (800, 12288)
     
-    bs = len(z)
-    z_perm = z[torch.randperm(bs)]
-    alpha = (torch.rand(bs) * (1 + 2*eta) - eta).unsqueeze(1).to(z)
-    z_augmented = alpha*z + (1-alpha)*z_perm
-    v = torch.randn(z.size()).to(z)
-    Jv = torch.autograd.functional.jvp(
-        func, z_augmented, v=v, create_graph=create_graph)[1]
-    TrG = torch.sum(Jv.view(bs, -1)**2, dim=1).mean()
-    JTJv = (torch.autograd.functional.vjp(
-        func, z_augmented, v=Jv, create_graph=create_graph)[1]).view(bs, -1)
-    TrG2 = torch.sum(JTJv**2, dim=1).mean()
-    return TrG2/TrG**2
+    feat.size() == (batch_size, step_length, latent_dim) # (16, 50, 1224)
     '''
-    bs = z.shape[0]
-    indices = tf.random.shuffle(tf.range(bs))
-    z_perm = tf.gather(z, indices)
+    z = tf.reshape(feat, [-1, feat.shape[-1]])                                  # z: (800, 1224)
+    ratio = 400
+    z = self.sample_batch(z, ratio)
+    BS = z.shape[0]                                                             # BS = 800/400
+    indices = tf.random.shuffle(tf.range(BS))                                   
+    z_perm = tf.gather(z, indices)                                              # z_perm: (BS, 1224)
+    
+    alpha = tf.random.uniform([BS], minval=1 - eta, maxval=1 + eta)[:, tf.newaxis] 
+    alpha = tf.cast(alpha, dtype=z.dtype)                                       # alpha: (BS, 1)
+    
+    z_augmented = tf.multiply(alpha, z) + tf.multiply((1 - alpha), z_perm)      # z_augmented: (BS, 1224)
+    v = tf.random.normal(z.shape, dtype=z.dtype)                                # v: (BS, 1224)   
 
-    alpha = tf.random.uniform([bs], minval=1 - eta, maxval=1 + eta)[:, tf.newaxis]
-    alpha = tf.cast(alpha, dtype=z.dtype)
 
-    z_augmented = tf.multiply(alpha, z) + tf.multiply((1 - alpha), z_perm)
-    v = tf.random.normal(z.shape, dtype=z.dtype) 
-    #print(z_augmented.shape)
-    #print(v.shape)
-    #print(f"decoder_output: {func(z_augmented).shape}")
-
-    with tf.GradientTape(persistent=True) as tape:
+    with tf.GradientTape() as tape:
       tape.watch(z_augmented)
-      y = func(z_augmented)
-      J = tape.batch_jacobian(y, z_augmented)
-    Jv = tf.multiply(J, tf.expand_dims(tf.expand_dims(tf.expand_dims(v, axis=1), axis=2), axis=3))
-    Jv = tf.reduce_sum(Jv, axis=-1)
-    TrG = tf.reduce_mean(tf.reduce_sum(Jv**2, axis=[1, 2, 3]))  # Assuming z has shape [batch_size, height, width, channels]
-    #print(TrG)
-    
-    JvT = tf.transpose(Jv, perm=[0, 2, 1, 3])
-    JTJv = tf.einsum('bijc,bjkc->bikc', JvT, Jv)
-    '''
-    with tf.GradientTape(persistent=True) as tape:
-        tape.watch(z_augmented)
-        JTJv = tape.batch_jacobian(y, z_augmented, output_gradients = Jv)
-        print(JTJv)
-    '''
-    TrG2 = tf.reduce_mean(tf.reduce_sum(JTJv**2, axis=[1, 2, 3]))  # Assuming z has shape [batch_size, height, width, channels]
-    
-    return TrG2 / (TrG**2)
+      J = tape.batch_jacobian(
+        func(z_augmented), z_augmented, experimental_use_pfor=False)            # J: (BS, 12288, 1224)
+    Jv = tf.linalg.matvec(J, v)                                                 # Jv: (BS, 12288)
+    TrG = tf.reduce_mean(tf.reduce_sum(Jv**2, axis=1))                          # TrG: ()        
 
-  '''
-  def sample_latent(self, z):
-    half_chan = int(z.shape[1] / 2)
-    mu, log_sig = z[:, :half_chan], z[:, half_chan:]
-    eps = torch.randn(*mu.shape, dtype=torch.float32)
-    eps = eps.to(z.device)
-    return mu + torch.exp(log_sig) * eps
-  '''
+    JTJv = tf.linalg.matvec(tf.transpose(J, perm=[0,2,1]), Jv)                  # JTJv: (BS, 1224)
+    TrG2 = tf.reduce_mean(tf.reduce_sum(JTJv**2, axis=1))                       # TrG2: ()
+    
+    return TrG2 - 2*TrG + 2
+    #return TrG2 / (TrG**2 + 1e-6)
+    
+  def sample_batch(self, z, ratio):
+    indices = tf.random.shuffle(tf.range(z.shape[0]))[:int(z.shape[0]/ratio)]                                  
+    z_sample = tf.gather(z, indices) 
+    return z_sample  
+
   ############################################################################################################
   ############################################################################################################
 
