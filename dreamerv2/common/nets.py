@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers as tfkl
 from tensorflow_probability import distributions as tfd
-from tensorflow.keras.mixed_precision import experimental as prec
+from tensorflow.keras import mixed_precision  as prec
 
 import common
 
@@ -282,13 +282,11 @@ class Decoder(common.Module):
 
   ############################################################################################################
   ######################### Differentiable decoder forward function ##########################################
-  def transform_state(self, features):
-    x = self.get('convin', tfkl.Dense, 32 * self._cnn_depth)(features)          # features: (16, 50, 1224) -> x: (16, 50, 1536)
-    x = tf.reshape(x, [-1, 32 * self._cnn_depth])                                # x: (800, 1536)
-    return x
-
-  def estim_obs(self, x): 
-    x = tf.reshape(x, [-1, 1, 1, 32 * self._cnn_depth])                                                        # x: (800, 1536)
+  
+  def estim_obs(self, features):                                         # features: (800/ratio, 1224)
+    #features = tf.reshape(features, [bs, -1, features.shape[-1]])              # features: (16/ratio, 50, 1224)                                          
+    x = self.get('convin', tfkl.Dense, 32 * self._cnn_depth)(features)          # features: (16/ratio, 50, 1224) -> x: (16/ratio, 50, 1536)
+    x = tf.reshape(x, [-1, 1, 1, 32 * self._cnn_depth])                         # x: (800/ratio, 1, 1, 1536)
     channels = {k: self._shapes[k][-1] for k in self.cnn_keys}
     ConvT = tfkl.Conv2DTranspose
     for i, kernel in enumerate(self._cnn_kernels):
@@ -298,8 +296,8 @@ class Decoder(common.Module):
         depth, act, norm = sum(channels.values()), tf.identity, 'none'
       x = self.get(f'conv{i}', ConvT, depth, kernel, 2)(x)
       x = self.get(f'convnorm{i}', NormLayer, norm)(x)
-      x = act(x)                                                                
-    return x                                                                    # x: (800, 64, 64, 3)
+      x = act(x)                                                                # x: (800/ratio, 64, 64, 3)
+    return tf.reshape(x, [x.shape[0], -1])                                      # x: (800/ratio, 64*64*3=12288)
   ############################################################################################################
   ############################################################################################################
 
